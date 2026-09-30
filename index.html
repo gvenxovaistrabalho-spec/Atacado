@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Atacado</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style>
+:root{--c:#1e40af}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#f3f4f6;color:#111}
+header{background:var(--c);color:#fff;display:flex;align-items:center;gap:12px;padding:10px 16px;flex-wrap:wrap}
+header img{height:40px;border-radius:6px;background:#fff}header b{font-size:18px;margin-right:auto}
+nav button,.btn{border:0;border-radius:8px;padding:8px 14px;cursor:pointer;background:var(--c);color:#fff;font-size:14px}
+nav button{background:rgba(255,255,255,.2)}nav button.on{background:#fff;color:var(--c)}
+main{max-width:1100px;margin:16px auto;padding:0 12px}
+.card{background:#fff;border-radius:12px;padding:14px;box-shadow:0 1px 3px #0002;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px}
+.grid img{width:100%;height:150px;object-fit:cover;border-radius:8px;background:#e5e7eb}
+input,select,textarea{padding:8px;border:1px solid #ccc;border-radius:8px;width:100%;margin:4px 0;font:inherit}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:6px;border-bottom:1px solid #eee;text-align:left}
+td input{width:90px}.box{max-width:380px;margin:40px auto}.g{background:#16a34a}.r{background:#dc2626}
+.chat{height:300px;overflow:auto;background:#f9fafb;padding:8px;border-radius:8px}
+.m{max-width:75%;padding:6px 10px;border-radius:10px;margin:4px 0;background:#e5e7eb}.m.eu{margin-left:auto;background:#dbeafe}
+.tag{padding:2px 8px;border-radius:99px;background:#e5e7eb;font-size:12px}
+</style></head><body><div id="app"></div>
+<script>
+// >>> COLE SUAS CHAVES (Supabase > Project Settings > API)
+const SUPABASE_URL='COLE_AQUI_A_URL', SUPABASE_KEY='COLE_AQUI_A_ANON_KEY';
+const sb=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+let me,cfg={},tab,cart={},prods=[],peds=[],chatWith=null;
+const $=s=>document.querySelector(s),app=$('#app');
+const R=v=>'R$ '+Number(v||0).toFixed(2).replace('.',',');
+const TABS={cliente:['catalogo','carrinho','pedidos','chat'],admin:['produtos','clientes','pedidos','chat','config'],producao:['pedidos']};
+const ST={novo:'Novo',em_producao:'Em produção',pronto:'Pronto',entregue:'Entregue'};
+
+async function init(){
+  const {data:{session}}=await sb.auth.getSession();
+  cfg=(await sb.from('config').select().eq('id',1).single()).data||{};
+  document.documentElement.style.setProperty('--c',cfg.cor||'#1e40af');document.title=cfg.nome_loja||'Atacado';
+  if(!session)return loginView();
+  me=(await sb.from('profiles').select().eq('id',session.user.id).single()).data;
+  if(!me)return loginView();
+  if(!me.aprovado)return shell('<div class="card"><h3>Cadastro em análise</h3><p>Aguarde a aprovação do administrador.</p></div>',[]);
+  tab=TABS[me.role][0];go(tab);
+}
+function shell(html,tabs){
+  app.innerHTML=`<header>${cfg.logo_url?`<img src="${cfg.logo_url}">`:''}<b>${cfg.nome_loja||'Atacado'}</b>
+  <nav>${tabs.map(t=>`<button class="${t==tab?'on':''}" onclick="go('${t}')">${t[0].toUpperCase()+t.slice(1)}${t=='carrinho'?' ('+Object.keys(cart).length+')':''}</button>`).join(' ')}
+  <button onclick="sair()">Sair</button></nav></header><main>${html}</main>`;
+}
+async function sair(){await sb.auth.signOut();location.reload()}
+function loginView(mode='login'){
+  const c=mode=='cad';
+  app.innerHTML=`<div class="box card"><h2 style="text-align:center">${cfg.logo_url?`<img src="${cfg.logo_url}" height=50><br>`:''}${cfg.nome_loja||'Atacado'}</h2>
+  ${c?'<input id="nome" placeholder="Nome"><input id="emp" placeholder="Empresa"><input id="tel" placeholder="Telefone com DDD">':''}
+  <input id="em" type="email" placeholder="Email"><input id="pw" type="password" placeholder="Senha (mín. 6)">
+  <button class="btn" style="width:100%" onclick="${c?'cadastrar()':'entrar()'}">${c?'Cadastrar':'Entrar'}</button>
+  <p style="text-align:center"><a href="#" onclick="loginView('${c?'login':'cad'}');return false">${c?'Já tenho conta':'Criar cadastro'}</a></p></div>`;
+}
+async function entrar(){
+  const {error}=await sb.auth.signInWithPassword({email:$('#em').value,password:$('#pw').value});
+  error?alert('Erro: '+error.message):init();
+}
+async function cadastrar(){
+  const {error}=await sb.auth.signUp({email:$('#em').value,password:$('#pw').value,options:{data:{nome:$('#nome').value,telefone:$('#tel').value,empresa:$('#emp').value}}});
+  if(error)return alert(error.message);
+  alert('Cadastro enviado! Aguarde aprovação do administrador.');init();
+}
+async function up(file){
+  const p=Date.now()+'-'+file.name.replace(/[^\w.]/g,'');
+  const {error}=await sb.storage.from('publico').upload(p,file);
+  if(error){alert(error.message);return null}
+  return sb.storage.from('publico').getPublicUrl(p).data.publicUrl;
+}
+async function go(t){
+  tab=t;shell('Carregando...',TABS[me.role]);
+  const v={catalogo,carrinho,pedidos,chat,produtos,clientes,config}[t];
+  const h=await v();shell(h,TABS[me.role]);if(t=='chat')loadChat();
+}
+/* ---------- CLIENTE ---------- */
+async function catalogo(){
+  prods=(await sb.from('produtos').select().eq('ativo',true).order('nome')).data||[];
+  return '<div class="grid">'+prods.map(p=>`<div class="card"><img src="${p.foto_url||''}" alt="">
+  <h4 style="margin:8px 0 2px">${p.nome}</h4><small>${p.descricao||''}</small>
+  <p><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${p.cor}"></span> <b>${R(p.preco)}</b><br><small>Estoque: ${p.quantidade}</small></p>
+  <input type="number" min="1" max="${p.quantidade}" value="1" id="q${p.id}">
+  <button class="btn" ${p.quantidade<1?'disabled':''} onclick="add(${p.id})">Adicionar</button></div>`).join('')+'</div>';
+}
+function add(id){cart[id]=(cart[id]||0)+Number($('#q'+id).value||1);alert('Adicionado!');shell($('main').innerHTML,TABS[me.role])}
+async function carrinho(){
+  if(!prods.length)prods=(await sb.from('produtos').select()).data||[];
+  const ids=Object.keys(cart);if(!ids.length)return '<div class="card">Carrinho vazio.</div>';
+  let tot=0;const rows=ids.map(i=>{const p=prods.find(x=>x.id==i),s=p.preco*cart[i];tot+=s;return `<tr><td>${p.nome}</td><td>${cart[i]}</td><td>${R(s)}</td><td><button class="btn r" onclick="delete cart[${i}];go('carrinho')">x</button></td></tr>`}).join('');
+  return `<div class="card"><table>${rows}</table><h3>Total: ${R(tot)}</h3>
+  <input id="pn" value="${me.nome||''}" placeholder="Nome"><input id="pe" value="${me.email||''}" placeholder="Email">
+  <input id="pt" value="${me.telefone||''}" placeholder="Telefone">
+  <label>Horário desejado para ficar pronto</label><input id="ph" type="datetime-local">
+  <button class="btn g" onclick="finalizar(${tot})">Enviar pedido</button></div>`;
+}
+async function finalizar(total){
+  const itens=Object.keys(cart).map(i=>{const p=prods.find(x=>x.id==i);return{id:p.id,nome:p.nome,qtd:cart[i],preco:p.preco}});
+  const {error}=await sb.from('pedidos').insert({cliente_id:me.id,nome:$('#pn').value,email:$('#pe').value,telefone:$('#pt').value,hora_pronto:$('#ph').value,itens,total});
+  if(error)return alert(error.message);cart={};alert('Pedido enviado!');go('pedidos');
+}
+/* ---------- PEDIDOS (cliente, admin, produção) ---------- */
+async function pedidos(){
+  peds=(await sb.from('pedidos').select().order('id',{ascending:false})).data||[];
+  const staff=me.role!='cliente';
+  return peds.map(p=>`<div class="card"><b>#${p.id}</b> · ${p.nome} · ${p.telefone||''} · ${R(p.total)} · <span class="tag">${ST[p.status]}</span>
+  <div><small>${(p.itens||[]).map(i=>i.qtd+'x '+i.nome).join(', ')}</small></div>
+  ${staff?`<p>Status: <select onchange="updPed(${p.id},'status',this.value)">${Object.entries(ST).map(([k,v])=>`<option value="${k}" ${k==p.status?'selected':''}>${v}</option>`).join('')}</select>
+  Pronto às: <input type="datetime-local" value="${p.hora_pronto||''}" style="width:auto" onchange="updPed(${p.id},'hora_pronto',this.value)"></p>
+  <button class="btn g" onclick="wa(${p.id},'recebido')">WhatsApp: recebido</button>
+  <button class="btn" onclick="wa(${p.id},'producao')">WhatsApp: em produção</button>
+  <button class="btn g" onclick="wa(${p.id},'pronto')">WhatsApp: pronto</button>
+  <button class="btn r" onclick="wa(${p.id},'atraso')">WhatsApp: atraso</button>`:`<small>Pronto às: ${p.hora_pronto?p.hora_pronto.replace('T',' '):'a definir'}</small>`}</div>`).join('')||'<div class="card">Sem pedidos.</div>';
+}
+async function updPed(id,k,v){const {error}=await sb.from('pedidos').update({[k]:v}).eq('id',id);if(error)alert(error.message)}
+function wa(id,tipo){
+  const p=peds.find(x=>x.id==id),h=p.hora_pronto?p.hora_pronto.replace('T',' às '):'em breve';
+  const M={recebido:`Olá ${p.nome}! Recebemos seu pedido #${p.id} (${R(p.total)}). Previsão: ${h}.`,
+  producao:`Olá ${p.nome}, seu pedido #${p.id} entrou em produção. Previsão: ${h}.`,
+  pronto:`Olá ${p.nome}! Seu pedido #${p.id} está pronto para retirada. Obrigado pela preferência!`,
+  atraso:`Olá ${p.nome}, seu pedido #${p.id} sofreu um pequeno atraso. Nova previsão: ${h}. Pedimos desculpas.`};
+  const n=(p.telefone||'').replace(/\D/g,'');
+  window.open(`https://wa.me/${n.length<=11?'55'+n:n}?text=${encodeURIComponent(M[tipo])}`,'_blank');
+}
+/* ---------- CHAT ---------- */
+async function chat(){
+  let sel='';
+  if(me.role=='admin'){
+    const cl=(await sb.from('profiles').select().eq('role','cliente').eq('aprovado',true)).data||[];
+    if(!chatWith&&cl[0])chatWith=cl[0].id;
+    sel=`<select onchange="chatWith=this.value;loadChat()">${cl.map(c=>`<option value="${c.id}" ${c.id==chatWith?'selected':''}>${c.nome||c.email}</option>`).join('')}</select>`;
+  }else chatWith=me.id;
+  return `<div class="card"><h3>Chat de dúvidas</h3>${sel}<div class="chat" id="cb"></div>
+  <input id="ct" placeholder="Digite sua mensagem" onkeydown="if(event.key=='Enter')envia()"><button class="btn" onclick="envia()">Enviar</button></div>`;
+}
+async function loadChat(){
+  if(tab!='chat'||!chatWith||!$('#cb'))return;
+  const d=(await sb.from('mensagens').select().eq('cliente_id',chatWith).order('id')).data||[];
+  $('#cb').innerHTML=d.map(m=>`<div class="m ${m.de==me.id?'eu':''}">${m.texto.replace(/</g,'&lt;')}<br><small>${new Date(m.criado).toLocaleString('pt-BR')}</small></div>`).join('');
+  $('#cb').scrollTop=1e9;
+}
+async function envia(){
+  const t=$('#ct').value.trim();if(!t||!chatWith)return;
+  await sb.from('mensagens').insert({cliente_id:chatWith,de:me.id,texto:t});$('#ct').value='';loadChat();
+}
+setInterval(loadChat,4000);
+/* ---------- ADMIN ---------- */
+async function produtos(){
+  prods=(await sb.from('produtos').select().order('id')).data||[];
+  return `<div class="card"><h3>Novo produto</h3><input id="n" placeholder="Nome"><textarea id="d" placeholder="Descrição"></textarea>
+  <input id="pr" type="number" step="0.01" placeholder="Preço"><input id="qt" type="number" placeholder="Quantidade">
+  Cor: <input id="co" type="color" value="#1e40af" style="width:60px"> Foto: <input id="fo" type="file" accept="image/*">
+  <button class="btn g" onclick="novoP()">Adicionar produto</button></div>
+  <div class="card" style="overflow:auto"><table><tr><th>Foto</th><th>Nome</th><th>Preço</th><th>Qtd</th><th>Cor</th><th>Ativo</th><th></th></tr>
+  ${prods.map(p=>`<tr><td><img src="${p.foto_url||''}" width=40 height=40 style="object-fit:cover"><input type="file" style="width:100px" onchange="trocaFoto(${p.id},this.files[0])"></td>
+  <td><input style="width:140px" value="${p.nome}" onchange="updP(${p.id},'nome',this.value)"></td>
+  <td><input type="number" step="0.01" value="${p.preco}" onchange="updP(${p.id},'preco',this.value)"></td>
+  <td><input type="number" value="${p.quantidade}" onchange="updP(${p.id},'quantidade',this.value)"></td>
+  <td><input type="color" style="width:50px" value="${p.cor}" onchange="updP(${p.id},'cor',this.value)"></td>
+  <td><input type="checkbox" style="width:auto" ${p.ativo?'checked':''} onchange="updP(${p.id},'ativo',this.checked)"></td>
+  <td><button class="btn r" onclick="delP(${p.id})">Excluir</button></td></tr>`).join('')}</table></div>`;
+}
+async function novoP(){
+  const f=$('#fo').files[0],foto=f?await up(f):null;
+  const {error}=await sb.from('produtos').insert({nome:$('#n').value,descricao:$('#d').value,preco:$('#pr').value||0,quantidade:$('#qt').value||0,cor:$('#co').value,foto_url:foto});
+  error?alert(error.message):go('produtos');
+}
+async function updP(id,k,v){const {error}=await sb.from('produtos').update({[k]:v}).eq('id',id);if(error)alert(error.message)}
+async function trocaFoto(id,f){if(!f)return;const u=await up(f);if(u){await updP(id,'foto_url',u);go('produtos')}}
+async function delP(id){if(confirm('Excluir?')){await sb.from('produtos').delete().eq('id',id);go('produtos')}}
+async function clientes(){
+  const d=(await sb.from('profiles').select().order('criado',{ascending:false})).data||[];
+  return '<div class="card" style="overflow:auto"><table><tr><th>Nome</th><th>Empresa</th><th>Email</th><th>Telefone</th><th>Perfil</th><th>Status</th><th></th></tr>'+
+  d.map(c=>`<tr><td>${c.nome||''}</td><td>${c.empresa||''}</td><td>${c.email}</td><td>${c.telefone||''}</td><td>${c.role}</td>
+  <td>${c.aprovado?'Aprovado':'<b>Pendente</b>'}</td><td>${c.role=='admin'?'':`<button class="btn ${c.aprovado?'r':'g'}" onclick="aprova('${c.id}',${!c.aprovado})">${c.aprovado?'Bloquear':'Aprovar'}</button>`}</td></tr>`).join('')+'</table></div>';
+}
+async function aprova(id,v){await sb.from('profiles').update({aprovado:v}).eq('id',id);go('clientes')}
+async function config(){
+  return `<div class="card"><h3>Identidade da loja</h3><label>Nome</label><input id="cn" value="${cfg.nome_loja||''}">
+  <label>Cor principal</label><input id="cc" type="color" value="${cfg.cor||'#1e40af'}" style="width:80px">
+  <label>Logo</label><input id="cl" type="file" accept="image/*"><button class="btn g" onclick="salvaCfg()">Salvar</button></div>`;
+}
+async function salvaCfg(){
+  const f=$('#cl').files[0],u={nome_loja:$('#cn').value,cor:$('#cc').value};if(f)u.logo_url=await up(f);
+  const {error}=await sb.from('config').update(u).eq('id',1);error?alert(error.message):location.reload();
+}
+init();
+</script></body></html>
